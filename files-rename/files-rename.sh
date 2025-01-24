@@ -53,6 +53,11 @@ for ext in "${video_extensions[@]}"; do
   done
 done
 
+  # Sort files in natural order (numerical order)
+  video_files=($(printf '%s\n' "${video_files[@]}" | sort -V))
+
+
+
 # Debug: Print the list of video files
 echo "Found video files:"
 printf '%s\n' "${video_files[@]}"
@@ -110,23 +115,32 @@ else
 fi
 
 # Rename the video files
-for ((i=0; i<num_videos; i++)); do
-  video_file="${video_files[$i]}"
-  title="${titles[$i]}"
-  
-  # Sanitize and format the title
-  clean_title=$(sanitize_title "$title")
-  
-  # Get the file extension
-  extension="${video_file##*.}"
-  
-  # Generate the new filename
-  new_number=$(printf "%0${padding}d" "$((i+1))")
-  new_filename="${video_dir}/${new_number}-${clean_title}.${extension}"
-  
+  for video_file in "${video_files[@]}"; do
+   # Extract the number from the filename using regex
+    if [[ "$video_file" =~ lesson([0-9]+)\. ]]; then
+      lesson_number="${BASH_REMATCH[1]}"
+    else
+      echo "Error: Could not extract number from filename '$video_file'."
+      continue
+    fi
+
+    # Get the corresponding title
+    title="${titles[$((lesson_number-1))]}"
+
+    # Sanitize and format the title
+    clean_title=$(sanitize_title "$title")
+    
+    # Get the file extension
+    extension="${video_file##*.}"
+    
+    # Generate the new filename
+    new_number=$(printf "%02d" "$lesson_number")  # Pad with leading zeros if necessary
+    new_filename="${video_dir}/${new_number}-${clean_title}.${extension}"
+
   # Rename the file
   mv "$video_file" "$new_filename"
   echo "Renamed: $video_file -> $new_filename"
 done
 
 echo "Renaming completed successfully."
+
