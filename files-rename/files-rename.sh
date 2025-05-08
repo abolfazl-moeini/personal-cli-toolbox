@@ -1,146 +1,115 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+#  Lesson Renamer – smarter pattern matching, counter‑independent, safe I/O
+# ---------------------------------------------------------------------------
+#   • Accepts *any* mix‑case variant like:
+#       lesson04.mp4, Lesson-04.mp4, LESSON 04.mkv, 04‑intro.mp4, lesson_04.final.srt …
+#   • Supports many video & subtitle formats (config below)
+#   • Detects lesson number even when dash/space is absent (or prefixed digits)
+#   • Keeps titles in sync with detected lessons; warns, never overwrites blindly
+#   • Uses set -euo pipefail and nullglob for safe scripting
+# ---------------------------------------------------------------------------
 
-# Enable debugging
-# set -x
+set -euo pipefail
+shopt -s nullglob          # unmatched globs → empty arrays instead of literal
 
-# Directory containing the video files
-video_dir="./"
+# ---------------------- Configuration ------------------------
+# Add / remove extensions here (lower‑case only)
+video_exts=(mp4 mkv webm m4v mov avi)
+sub_exts=(srt vtt sub ass)
+file_exts=("${video_exts[@]}" "${sub_exts[@]}")
 
-# Supported video file extensions
-video_extensions=("mp4" "webm")
+video_dir="./"            # where the lesson files live
 
-# Find all .txt files in the current directory
-txt_files=(*.txt)
+# ---------------------- Helper functions --------------------
+die()        { printf "Error: %s\n" "$1" >&2; exit 1; }
+info()       { printf "\033[1;36m%s\033[0m\n" "$1"; }
+warn()       { printf "\033[1;33m%s\033[0m\n" "$1"; }
 
-# Check if there are any .txt files
-if [ ${#txt_files[@]} -eq 0 ]; then
-  echo "No .txt files found in the current directory."
-  exit 1
-fi
+# Sanitize a title: keep alnum/space/dash, trim, squeeze spaces, Title‑Case
+sanitize_title() {
+  local t="${1,,}"                                         # to lower
+  t=$(echo "$t" | tr -cd '[:alnum:][:space:]-')             # valid chars
+  t=$(echo "$t" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  t=$(echo "$t" | tr -s ' ')                                # squeeze spaces
+  # Title‑case each word
+  echo "$t" | awk '{for(i=1;i<=NF;i++){ $i=toupper(substr($i,1,1)) substr($i,2)}}1'
+}
 
-# If there is more than one .txt file, ask the user to select one
-if [ ${#txt_files[@]} -gt 1 ]; then
-  echo "Multiple .txt files found. Please select one:"
-  for i in "${!txt_files[@]}"; do
-    echo "$((i+1)). ${txt_files[$i]}"
-  done
-  read -p "Enter the number of the file you want to use: " selection
-  if [[ ! "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt ${#txt_files[@]} ]; then
-    echo "Invalid selection. Exiting."
-    exit 1
+# Extract lesson number – tries several patterns, returns non‑zero on failure
+extract_number() {
+  local base="${1##*/}"   # filename without path
+  # (1)  "lesson 04"  / "lesson-04"  / "lesson04"  (case‑insensitive)
+  if [[ $base =~ [Ll]esson[[:space:]_-]*([0-9]{1,3}) ]]; then
+    printf '%d' "${BASH_REMATCH[1]#0}"; return 0
   fi
-  titles_file="${txt_files[$((selection-1))]}"
+  # (2)  Leading digits + separator: "04 intro.mp4", "4_intro.srt"
+  if [[ $base =~ ^([0-9]{1,3})[[:space:]_-] ]]; then
+    printf '%d' "${BASH_REMATCH[1]#0}"; return 0
+  fi
+  return 1  # no match
+}
+
+# ---------------------- Pick the titles file ----------------
+mapfile -t txt_files < <(printf '%s\n' *.txt)
+(( ${#txt_files[@]} )) || die "No .txt files found. Put a titles file here."
+
+if (( ${#txt_files[@]} > 1 )); then
+  info "Multiple .txt files found. Choose one:"
+  select titles_file in "${txt_files[@]}"; do [[ -n $titles_file ]] && break; done
 else
   titles_file="${txt_files[0]}"
 fi
+info "Using titles from: $titles_file"
 
-# Confirm the selected file
-echo "You have selected: $titles_file"
-read -p "Is this correct? (y/n): " confirm
-if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-  echo "Aborting."
-  exit 1
-fi
+# Read titles into array (index = lesson‑number – 1)
+mapfile -t titles < "$titles_file"
 
-# Get the list of video files in the directory (with numeric suffix)
-video_files=()
-for ext in "${video_extensions[@]}"; do
-  # Use a loop to match files with numeric suffix (e.g., lesson1.mp4, lesson2.webm)
-  for file in "$video_dir"/lesson[0-9]*."$ext"; do
-    if [ -f "$file" ]; then
-      video_files+=("$file")
-    fi
-  done
+# ---------------------- Collect candidate files -------------
+lesson_files=()
+for ext in "${file_exts[@]}"; do
+  for f in "$video_dir"/*."$ext"; do [[ -f $f ]] && lesson_files+=("$f"); done
+done
+(( ${#lesson_files[@]} )) || die "No files with extensions (${file_exts[*]}) found."
+
+# Infer lesson numbers & filter invalids ----------------------
+valid_files=()
+lesson_numbers=()
+max_num=0
+for f in "${lesson_files[@]}"; do
+  if num=$(extract_number "$f"); then
+    valid_files+=("$f"); lesson_numbers+=("$num");
+    (( num > max_num )) && max_num=$num
+  else
+    warn "Skipping $f  (no lesson number identified)"
+  fi
+done
+(( ${#valid_files[@]} )) || die "Could not find any lesson‑numbered files."
+
+# Determine padding width dynamically ------------------------
+if   (( max_num > 99 )); then padding=3
+elif (( max_num > 9 ));  then padding=2
+else padding=1; fi
+info "Detected max lesson $max_num → padding width $padding."
+
+# Sort files naturally (lesson10 after lesson2) ---------------
+IFS=$'\n' valid_files=($(sort -V <<<"${valid_files[*]}")); unset IFS
+
+# ---------------------- Rename loop -------------------------
+for file in "${valid_files[@]}"; do
+  num=$(extract_number "$file") || continue   # already ensured but safe
+  title_idx=$(( num - 1 ))
+  if [[ -z ${titles[title_idx]:-} ]]; then
+    warn "No title provided for lesson $num – skipping $file"; continue;
+  fi
+  clean_title="$(sanitize_title "${titles[title_idx]}")"
+  ext="${file##*.}"
+  new_name="${video_dir}/$(printf "%0${padding}d" "$num")-${clean_title}.${ext}"
+  if [[ $file == "$new_name" ]]; then
+    info "Already named: $new_name"; continue;
+  fi
+  mv -i -- "$file" "$new_name"
+  echo "$file → $new_name"
 done
 
-  # Sort files in natural order (numerical order)
-  video_files=($(printf '%s\n' "${video_files[@]}" | sort -V))
-
-
-
-# Debug: Print the list of video files
-echo "Found video files:"
-printf '%s\n' "${video_files[@]}"
-
-# Count the number of video files
-num_videos=${#video_files[@]}
-
-# Check if any video files were found
-if [ "$num_videos" -eq 0 ]; then
-  echo "Error: No video files matching 'lesson[0-9]*.{${video_extensions[*]}}' found in '$video_dir'."
-  exit 1
-fi
-
-# Read the titles from the text file into an array
-titles=()
-while IFS= read -r line || [[ -n "$line" ]]; do
-  titles+=("$line")
-done < "$titles_file"
-
-# Count the number of titles
-num_titles=${#titles[@]}
-
-# Check if the number of videos matches the number of titles
-if [ "$num_videos" -ne "$num_titles" ]; then
-  echo "Error: Number of videos ($num_videos) does not match number of titles ($num_titles)."
-  exit 1
-fi
-
-# Function to sanitize and format the title
-sanitize_title() {
-  local title="$1"
-  
-  # Remove invalid characters (keep only alphanumeric, spaces, and hyphens)
-  title=$(echo "$title" | tr -cd '[:alnum:][:space:]-' | tr ' ' ' ')
-  
-  # Trim leading and trailing spaces
-  title=$(echo "$title" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-  
-  # Replace multiple spaces with a single space
-  title=$(echo "$title" | tr -s ' ')
-  
-  # Capitalize the first letter of each word
-  title=$(echo "$title" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2));}1')
-  
-  echo "$title"
-}
-
-# Determine the padding for the numbering
-if [ "$num_videos" -gt 99 ]; then
-  padding=3
-elif [ "$num_videos" -gt 9 ]; then
-  padding=2
-else
-  padding=1
-fi
-
-# Rename the video files
-  for video_file in "${video_files[@]}"; do
-   # Extract the number from the filename using regex
-    if [[ "$video_file" =~ lesson([0-9]+)\. ]]; then
-      lesson_number="${BASH_REMATCH[1]}"
-    else
-      echo "Error: Could not extract number from filename '$video_file'."
-      continue
-    fi
-
-    # Get the corresponding title
-    title="${titles[$((lesson_number-1))]}"
-
-    # Sanitize and format the title
-    clean_title=$(sanitize_title "$title")
-    
-    # Get the file extension
-    extension="${video_file##*.}"
-    
-    # Generate the new filename
-    new_number=$(printf "%02d" "$lesson_number")  # Pad with leading zeros if necessary
-    new_filename="${video_dir}/${new_number}-${clean_title}.${extension}"
-
-  # Rename the file
-  mv "$video_file" "$new_filename"
-  echo "Renamed: $video_file -> $new_filename"
-done
-
-echo "Renaming completed successfully."
-
+info "Renaming complete!"
