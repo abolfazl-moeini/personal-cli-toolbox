@@ -22,12 +22,13 @@
 ---
 
 ## Requirements
-
+pip install "curl_cffi[requests]"
 | Dependency | Minimum Version | Install Hint                          |
 |------------|-----------------|---------------------------------------|
 | Python     | 3.8             | `python -m pip install --upgrade pip` |
 | requests   | —               | `pip install requests`                |
 | tqdm       | —               | `pip install tqdm`                    |
+| requests   | —               | `pip install curl_cffi[requests]`     |
 | ffmpeg     | 4.x             | Linux `apt install ffmpeg` / macOS `brew install ffmpeg` / Windows `choco install ffmpeg` |
 
 A convenience file is included:
