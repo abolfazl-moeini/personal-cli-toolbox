@@ -66,7 +66,8 @@ download_stream() {
     # Recreate the concat list every time to ensure it's fresh
     rm -f "$TEMP_DIR/concat_list.txt"
     find "$TEMP_DIR" -maxdepth 1 -name '*.ts' -o -name '*.aac' -o -name '*.mp4' | sort -V | while read -r line; do
-        echo "file '$line'" >> "$TEMP_DIR/concat_list.txt"
+        filename=$(basename "$line")
+        echo "file '$filename'" >> "$TEMP_DIR/concat_list.txt"
     done
 
     # 4. Stitch files together with FFmpeg
@@ -76,8 +77,6 @@ download_stream() {
     if [ $? -eq 0 ]; then
         echo -e "\n${GREEN}Success! File saved as: $OUTPUT_FILE${NC}"
         echo -e "${YELLOW}Cleanup: You can now manually delete the temporary directory:${NC} $TEMP_DIR"
-        # Optional: Uncomment the line below to automatically clean up on success
-        # rm -rf "$TEMP_DIR"
     else
         echo -e "\n${RED}Error: FFmpeg failed to stitch the files.${NC}"
         echo -e "${YELLOW}Temporary files were kept in $TEMP_DIR for debugging.${NC}"
@@ -98,18 +97,11 @@ main() {
 
     echo -e "${BLUE}Analyzing URL:${NC} $INITIAL_URL"
 
-    # MODIFIED: Create a temporary directory in the current path based on the output filename
-    # This allows for resuming downloads as the directory is not in /tmp and is not cleaned up automatically.
     local OUTPUT_BASENAME
     OUTPUT_BASENAME=$(basename "$OUTPUT_FILE")
     local TEMP_DIR="./.${OUTPUT_BASENAME}.tmp"
     mkdir -p "$TEMP_DIR"
 
-    # MODIFIED: The automatic cleanup trap is disabled to allow resuming.
-    # The user will be prompted to delete the folder manually upon success.
-    # trap 'echo -e "${YELLOW}Cleaning up temporary files...${NC}"; rm -rf "$TEMP_DIR"' EXIT
-
-    # Fetch the initial playlist content
     local MASTER_PLAYLIST_CONTENT
     MASTER_PLAYLIST_CONTENT=$(curl -H "User-Agent: $USER_AGENT" -s "$INITIAL_URL")
 
@@ -152,7 +144,6 @@ main() {
         local choice
         read -p "Enter number (1-${#streams[@]}): " choice
 
-        # Validate input
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#streams[@]} ]; then
             echo -e "${RED}Invalid selection.${NC}"
             exit 1
