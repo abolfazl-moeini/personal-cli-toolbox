@@ -39,7 +39,8 @@ download_stream() {
 
     # 1. Fetch playlist, filter for segment files, and create a list of full URLs
     echo -e "\n${YELLOW}Step 1: Fetching playlist and parsing segments...${NC}"
-    curl -H "User-Agent: $USER_AGENT" -s "$M3U8_URL" | grep -v "^#" | awk -v base="$BASE_URL" '{if ($0 ~ /^http/) {print} else {print base"/"$0}}' > "$TEMP_DIR/urllist.txt"
+    # MODIFIED: Added 'NF > 0' to awk to prevent processing of empty lines
+    curl -H "User-Agent: $USER_AGENT" -s "$M3U8_URL" | grep -v "^#" | awk -v base="$BASE_URL" 'NF > 0 {if ($0 ~ /^http/) {print} else {print base"/"$0}}' > "$TEMP_DIR/urllist.txt"
 
     if [ ! -s "$TEMP_DIR/urllist.txt" ]; then
         echo -e "${RED}Error: Could not extract any segment URLs from the media playlist.${NC}"
