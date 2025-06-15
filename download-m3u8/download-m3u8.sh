@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # A robust script to download M3U8 streams using aria2c and ffmpeg.
-# Updated to handle master playlists and support download resuming.
+# Updated to handle master playlists, support download resuming, and send a Referer header.
 
 # --- Configuration ---
 CONNECTIONS=16
@@ -27,33 +27,50 @@ check_deps() {
 }
 
 # --- Function to download and stitch a single media playlist ---
+## MODIFIED: Added HTTP_REFERER as an argument
 download_stream() {
     local M3U8_URL="$1"
     local OUTPUT_FILE="$2"
     local TEMP_DIR="$3"
+    local HTTP_REFERER="$4" ## ADDED
     local BASE_URL=$(dirname "$M3U8_URL")
 
     echo -e "${BLUE}Downloading stream:${NC} $M3U8_URL"
+    if [ -n "$HTTP_REFERER" ]; then
+        echo -e "${BLUE}Using Referer:${NC} $HTTP_REFERER"
+    fi
     echo -e "${BLUE}Temporary files will be stored in:${NC} $TEMP_DIR"
 
+    ## ADDED: Build curl options array for robustness
+    local curl_opts=("-H" "User-Agent: $USER_AGENT" "-s")
+    if [ -n "$HTTP_REFERER" ]; then
+        curl_opts+=("-H" "Referer: $HTTP_REFERER")
+    fi
 
     # 1. Fetch playlist, filter for segment files, and create a list of full URLs
     echo -e "\n${YELLOW}Step 1: Fetching playlist and parsing segments...${NC}"
-    # MODIFIED: Added 'NF > 0' to awk to prevent processing of empty lines
-    curl -H "User-Agent: $USER_AGENT" -s "$M3U8_URL" | grep -v "^#" | awk -v base="$BASE_URL" 'NF > 0 {if ($0 ~ /^http/) {print} else {print base"/"$0}}' > "$TEMP_DIR/urllist.txt"
+    # MODIFIED: Use curl_opts array
+    curl "${curl_opts[@]}" "$M3U8_URL" | grep -v "^#" | awk -v base="$BASE_URL" 'NF > 0 {if ($0 ~ /^http/) {print} else {print base"/"$0}}' > "$TEMP_DIR/urllist.txt"
 
     if [ ! -s "$TEMP_DIR/urllist.txt" ]; then
         echo -e "${RED}Error: Could not extract any segment URLs from the media playlist.${NC}"
+        echo -e "${YELLOW}This could be due to a 403 Forbidden error. Try using the --referer option.${NC}"
         return 1
     fi
     
     local SEGMENT_COUNT=$(wc -l < "$TEMP_DIR/urllist.txt")
     echo -e "${GREEN}Found $SEGMENT_COUNT segments to download.${NC}"
 
+    ## ADDED: Build aria2c options array for robustness
+    local aria_opts=("-c" "--console-log-level=warn" "--user-agent=$USER_AGENT" "-x$CONNECTIONS" "-d$TEMP_DIR" "-i$TEMP_DIR/urllist.txt")
+    if [ -n "$HTTP_REFERER" ]; then
+        aria_opts+=("--header=Referer: $HTTP_REFERER")
+    fi
+
     # 2. Download all segments in parallel using aria2c
     echo -e "\n${YELLOW}Step 2: Downloading all segments with aria2c...${NC}"
-    # MODIFIED: Added -c flag for resuming downloads
-    aria2c -c --console-log-level=warn --user-agent="$USER_AGENT" -x"$CONNECTIONS" -d"$TEMP_DIR" -i"$TEMP_DIR/urllist.txt"
+    # MODIFIED: Use aria_opts array
+    aria2c "${aria_opts[@]}"
 
     if [ $? -ne 0 ]; then
         echo -e "${RED}Error: aria2c failed to download segments.${NC}"
@@ -62,8 +79,6 @@ download_stream() {
     fi
 
     # 3. Create a file list for FFmpeg's concat demuxer
-    # Use find and sort -V for robust ordering of segments (e.g., seg1, seg2, seg10)
-    # Recreate the concat list every time to ensure it's fresh
     rm -f "$TEMP_DIR/concat_list.txt"
     find "$TEMP_DIR" -maxdepth 1 -name '*.ts' -o -name '*.aac' -o -name '*.mp4' | sort -V | while read -r line; do
         filename=$(basename "$line")
@@ -84,15 +99,54 @@ download_stream() {
     fi
 }
 
+# --- Function to print usage ---
+## ADDED: Usage function for clarity
+usage() {
+    echo -e "${YELLOW}A robust script to download M3U8 streams.${NC}"
+    echo -e "\n${GREEN}Usage:${NC} $0 [options] \"<M3U8_URL>\" \"<OUTPUT_FILENAME>\""
+    echo -e "\n${GREEN}Options:${NC}"
+    echo -e "  -r, --referer <URL>    Specify a custom HTTP Referer header."
+    echo -e "  -h, --help               Display this help message."
+    exit 1
+}
+
 # --- Main Script Logic ---
 main() {
-    if [ "$#" -ne 2 ]; then
-        echo -e "${RED}Usage: $0 \"<M3U8_URL>\" \"<OUTPUT_FILENAME>\"${NC}"
-        exit 1
+    ## ADDED: Robust argument parsing
+    local INITIAL_URL=""
+    local OUTPUT_FILE=""
+    local HTTP_REFERER=""
+
+    # Parse command-line options
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -r|--referer)
+                HTTP_REFERER="$2"
+                shift # past argument
+                shift # past value
+                ;;
+            -h|--help)
+                usage
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${NC}"
+                usage
+                ;;
+            *)
+                if [ -z "$INITIAL_URL" ]; then
+                    INITIAL_URL="$1"
+                elif [ -z "$OUTPUT_FILE" ]; then
+                    OUTPUT_FILE="$1"
+                fi
+                shift # past argument
+                ;;
+        esac
+    done
+
+    if [ -z "$INITIAL_URL" ] || [ -z "$OUTPUT_FILE" ]; then
+        usage
     fi
 
-    local INITIAL_URL="$1"
-    local OUTPUT_FILE="$2"
     local BASE_URL=$(dirname "$INITIAL_URL")
 
     echo -e "${BLUE}Analyzing URL:${NC} $INITIAL_URL"
@@ -102,8 +156,15 @@ main() {
     local TEMP_DIR="./.${OUTPUT_BASENAME}.tmp"
     mkdir -p "$TEMP_DIR"
 
+    ## ADDED: Build curl options array for robustness
+    local curl_opts=("-H" "User-Agent: $USER_AGENT" "-s")
+    if [ -n "$HTTP_REFERER" ]; then
+        curl_opts+=("-H" "Referer: $HTTP_REFERER")
+    fi
+
     local MASTER_PLAYLIST_CONTENT
-    MASTER_PLAYLIST_CONTENT=$(curl -H "User-Agent: $USER_AGENT" -s "$INITIAL_URL")
+    ## MODIFIED: Use curl_opts array
+    MASTER_PLAYLIST_CONTENT=$(curl "${curl_opts[@]}" "$INITIAL_URL")
 
     # Check if it's a master playlist
     if echo "$MASTER_PLAYLIST_CONTENT" | grep -q "#EXT-X-STREAM-INF"; then
@@ -157,11 +218,13 @@ main() {
             CHOSEN_URL="$BASE_URL/$selected_playlist_path"
         fi
         
-        download_stream "$CHOSEN_URL" "$OUTPUT_FILE" "$TEMP_DIR"
+        ## MODIFIED: Pass HTTP_REFERER to the function
+        download_stream "$CHOSEN_URL" "$OUTPUT_FILE" "$TEMP_DIR" "$HTTP_REFERER"
 
     else
         echo -e "${GREEN}Media playlist detected. Proceeding directly with download...${NC}"
-        download_stream "$INITIAL_URL" "$OUTPUT_FILE" "$TEMP_DIR"
+        ## MODIFIED: Pass HTTP_REFERER to the function
+        download_stream "$INITIAL_URL" "$OUTPUT_FILE" "$TEMP_DIR" "$HTTP_REFERER"
     fi
 }
 

@@ -45,6 +45,13 @@ chmod +x download-m3u8.sh
 ./download-m3u8.sh "<M3U8_URL>" "<OUTPUT_FILENAME>"
 ```
 
+## Options
+
+| Flag | Description |
+| ---- | ----------- |
+| -r, --referer | Specify a custom HTTP Referer URL to bypass blocks. |
+| -h, --help | Display the help message. |
+
 ### Parameters
 
 - `M3U8_URL` (Required): The link to the M3U8 file. This can be a master playlist (with multiple quality options) or a direct media playlist.
