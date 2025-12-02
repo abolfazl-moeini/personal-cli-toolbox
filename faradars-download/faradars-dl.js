@@ -11,7 +11,7 @@
 		});
 	};
 
-	const elements = sidebar.querySelectorAll('button.items-start');
+    const elements = sidebar.querySelectorAll('[id^="lesson-"][id*="-step-"]');
 
 	for(const element of elements){
 
@@ -22,8 +22,6 @@
 			await wait();
 
 
-			let link = document.querySelector('video source[src*="/720/"]').src;
-			const title = element.querySelector('span').innerText;
 
 			if(! link) {
 				link = document.querySelector('video source[src*="vid.faradars"]').src;
